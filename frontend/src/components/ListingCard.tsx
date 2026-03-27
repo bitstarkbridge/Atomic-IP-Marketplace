@@ -1,7 +1,4 @@
-<<<<<<< HEAD:frontend/src/components/ListingCard.tsx
-=======
-import React, { useState, useEffect } from "react";
->>>>>>> e81efc7923ab171a6192de5b8a57cd97830de3aa:frontend/src/components/ListingCard.jsx
+import { useState, useEffect } from "react";
 import { ConfirmSwapForm } from "./ConfirmSwapForm";
 import { SetMerkleRootForm } from "./SetMerkleRootForm";
 import "./ListingCard.css";
@@ -24,14 +21,20 @@ interface IListingCard {
   onUpdated: () => void;
 }
 
+interface IMeta {
+  title: string;
+  description: string;
+  file_type: string;
+}
+
 /**
  * useIpfsMetadata
  * Fetches JSON metadata from IPFS for a given hash.
  */
-function useIpfsMetadata(ipfsHash) {
-  const [meta, setMeta] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+function useIpfsMetadata(ipfsHash: string) {
+  const [meta, setMeta] = useState<IMeta | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!ipfsHash) return;
@@ -43,10 +46,18 @@ function useIpfsMetadata(ipfsHash) {
         if (!r.ok) throw new Error(`IPFS fetch failed (${r.status})`);
         return r.json();
       })
-      .then((data) => { if (!cancelled) setMeta(data); })
-      .catch((err) => { if (!cancelled) setError(err.message); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+      .then((data) => {
+        if (!cancelled) setMeta(data as IMeta);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [ipfsHash]);
 
   return { meta, loading, error };
@@ -69,7 +80,11 @@ export function ListingCard({ listing, wallet, onUpdated }: IListingCard) {
     ? `${IPFS_GATEWAY}/${listing.ipfs_hash}`
     : null;
 
-  const { meta, loading: metaLoading, error: metaError } = useIpfsMetadata(listing.ipfs_hash);
+  const {
+    meta,
+    loading: metaLoading,
+    error: metaError,
+  } = useIpfsMetadata(listing.ipfs_hash);
   const [showMerkle, setShowMerkle] = useState(false);
 
   return (
@@ -95,7 +110,9 @@ export function ListingCard({ listing, wallet, onUpdated }: IListingCard) {
         {!metaLoading && meta && (
           <div className="lc__meta-preview">
             {meta.title && <p className="lc__meta-title">{meta.title}</p>}
-            {meta.description && <p className="lc__meta-desc">{meta.description}</p>}
+            {meta.description && (
+              <p className="lc__meta-desc">{meta.description}</p>
+            )}
             {meta.file_type && (
               <span className="lc__meta-badge">{meta.file_type}</span>
             )}
