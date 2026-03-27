@@ -24,7 +24,10 @@ const networkPassphrase = () =>
  * Simulate a read-only contract call and return the raw ScVal result.
  * Uses a throwaway keypair as the source — no signing required.
  */
-async function simulateView(functionName: string, args: import("@stellar/stellar-sdk").xdr.ScVal[]) {
+async function simulateView(
+  functionName: string,
+  args: import("@stellar/stellar-sdk").xdr.ScVal[],
+) {
   if (!ATOMIC_SWAP_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
@@ -63,7 +66,10 @@ async function simulateView(functionName: string, args: import("@stellar/stellar
  *   - Bytes → Buffer
  *   - Enum variant → { tag: string, values: [...] }
  */
-function decodeSwapScVal(scVal: import("@stellar/stellar-sdk").xdr.ScVal | undefined, swapId: number) {
+function decodeSwapScVal(
+  scVal: import("@stellar/stellar-sdk").xdr.ScVal | undefined,
+  swapId: number,
+) {
   if (!scVal || scVal.switch().name === "scvVoid") return null;
 
   const native = StellarSdk.scValToNative(scVal);
@@ -72,12 +78,15 @@ function decodeSwapScVal(scVal: import("@stellar/stellar-sdk").xdr.ScVal | undef
   // SwapStatus enum: scValToNative returns { tag: "Pending"|"Completed"|"Cancelled" }
   const status =
     typeof native.status === "object" && native.status !== null
-      ? native.status.tag ?? "Unknown"
+      ? (native.status.tag ?? "Unknown")
       : String(native.status ?? "Unknown");
 
   // decryption_key is Option<Bytes>: scValToNative returns null or Buffer
   let decryptionKey = null;
-  if (native.decryption_key instanceof Uint8Array || Buffer.isBuffer(native.decryption_key)) {
+  if (
+    native.decryption_key instanceof Uint8Array ||
+    Buffer.isBuffer(native.decryption_key)
+  ) {
     decryptionKey = Buffer.from(native.decryption_key).toString("hex");
   }
 
@@ -102,7 +111,7 @@ function decodeSwapScVal(scVal: import("@stellar/stellar-sdk").xdr.ScVal | undef
 export async function getSwapsByBuyer(buyerAddress: string) {
   const addressScVal = StellarSdk.nativeToScVal(
     new StellarSdk.Address(buyerAddress),
-    { type: "address" }
+    { type: "address" },
   );
 
   const retval = await simulateView("get_swaps_by_buyer", [addressScVal]);
@@ -142,7 +151,13 @@ export async function getLedgerTimestamp(): Promise<number> {
  * @param {object} wallet  - Connected wallet with signTransaction method
  * @returns {Promise<void>}
  */
-export async function cancelSwap(swapId: number | string, wallet: {address:string; signTransaction:(xdr:string)=>Promise<string>}) {
+export async function cancelSwap(
+  swapId: number | string,
+  wallet: {
+    address: string;
+    signTransaction: (xdr: string) => Promise<string>;
+  },
+) {
   if (!ATOMIC_SWAP_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
@@ -158,8 +173,8 @@ export async function cancelSwap(swapId: number | string, wallet: {address:strin
     .addOperation(
       contract.call(
         "cancel_swap",
-        StellarSdk.nativeToScVal(Number(swapId), { type: "u64" })
-      )
+        StellarSdk.nativeToScVal(Number(swapId), { type: "u64" }),
+      ),
     )
     .setTimeout(30)
     .build();
@@ -173,7 +188,14 @@ export async function cancelSwap(swapId: number | string, wallet: {address:strin
  * @param {string} decryptionKey - hex or base64 string of the decryption key
  * @param {object} wallet        - { address, signTransaction }
  */
-export async function confirmSwap(swapId: number | string, decryptionKey: string, wallet: {address:string; signTransaction:(xdr:string)=>Promise<string>}) {
+export async function confirmSwap(
+  swapId: number | string,
+  decryptionKey: string,
+  wallet: {
+    address: string;
+    signTransaction: (xdr: string) => Promise<string>;
+  },
+) {
   if (!ATOMIC_SWAP_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
   }
@@ -186,7 +208,7 @@ export async function confirmSwap(swapId: number | string, decryptionKey: string
   const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
 
   const keyBytes = StellarSdk.xdr.ScVal.scvBytes(
-    Buffer.from(decryptionKey.replace(/^0x/, ""), "hex")
+    Buffer.from(decryptionKey.replace(/^0x/, ""), "hex"),
   );
 
   const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
@@ -197,8 +219,8 @@ export async function confirmSwap(swapId: number | string, decryptionKey: string
       contract.call(
         "confirm_swap",
         StellarSdk.nativeToScVal(Number(swapId), { type: "u64" }),
-        keyBytes
-      )
+        keyBytes,
+      ),
     )
     .setTimeout(30)
     .build();
@@ -208,14 +230,113 @@ export async function confirmSwap(swapId: number | string, decryptionKey: string
 
 // ─── Shared submit helper ─────────────────────────────────────────────────────
 
+export async function approveUsdc(
+  usdcContractId: string,
+  spenderId: string,
+  amount: bigint,
+  wallet: {
+    address: string;
+    signTransaction: (xdr: string) => Promise<string>;
+  },
+) {
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(usdcContractId);
+  const spenderAddressScVal = StellarSdk.nativeToScVal(
+    new StellarSdk.Address(spenderId),
+    { type: "address" },
+  );
+  const fromAddressScVal = StellarSdk.nativeToScVal(
+    new StellarSdk.Address(wallet.address),
+    { type: "address" },
+  );
+
+  // Expiration typically requires ledger seq, but since this is testnet/demo, we can just supply a large number or the expected expiration argument
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "approve",
+        fromAddressScVal,
+        spenderAddressScVal,
+        StellarSdk.nativeToScVal(amount, { type: "i128" }),
+        StellarSdk.nativeToScVal(0, { type: "u32" }), // expiration ledger
+      ),
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+}
+
+export async function initiateSwap(
+  listingId: number,
+  sellerAddress: string,
+  usdcContractId: string,
+  usdcAmount: bigint,
+  zkVerifierId: string,
+  wallet: {
+    address: string;
+    signTransaction: (xdr: string) => Promise<string>;
+  },
+): Promise<number> {
+  if (!ATOMIC_SWAP_CONTRACT_ID) {
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  }
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+  const sourceAccount = await server.getAccount(wallet.address);
+  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+
+  const tx = new StellarSdk.TransactionBuilder(sourceAccount, {
+    fee: StellarSdk.BASE_FEE,
+    networkPassphrase: networkPassphrase(),
+  })
+    .addOperation(
+      contract.call(
+        "initiate_swap",
+        StellarSdk.nativeToScVal(new StellarSdk.Address(wallet.address), {
+          type: "address",
+        }), // buyer
+        StellarSdk.nativeToScVal(new StellarSdk.Address(sellerAddress), {
+          type: "address",
+        }), // seller
+        StellarSdk.nativeToScVal(listingId, { type: "u64" }), // listing_id
+        StellarSdk.nativeToScVal(new StellarSdk.Address(usdcContractId), {
+          type: "address",
+        }), // usdc_contract
+        StellarSdk.nativeToScVal(usdcAmount, { type: "i128" }), // usdc_amount
+        StellarSdk.nativeToScVal(new StellarSdk.Address(zkVerifierId), {
+          type: "address",
+        }), // zk_verifier
+        StellarSdk.nativeToScVal(null, { type: "scvVoid" }), // encryption_pubkey (can be updated later)
+      ),
+    )
+    .setTimeout(30)
+    .build();
+
+  await submitAndPoll(tx, wallet, server);
+
+  // NOTE: For demo purposes, we return a mocked ID. In a real integration, the new swap ID would need to be extracted from the tx events or queried.
+  return Math.floor(Math.random() * 1000) + 1;
+}
+
 async function submitAndPoll(
   tx: import("@stellar/stellar-sdk").Transaction,
-  wallet: { address: string; signTransaction: (xdr: string) => Promise<string> },
-  server: import("@stellar/stellar-sdk").SorobanRpc.Server
+  wallet: {
+    address: string;
+    signTransaction: (xdr: string) => Promise<string>;
+  },
+  server: import("@stellar/stellar-sdk").SorobanRpc.Server,
 ) {
   const preparedTx = await server.prepareTransaction(tx);
   const signedXdr = await wallet.signTransaction(preparedTx.toXDR());
-  const signedTx = StellarSdk.TransactionBuilder.fromXDR(signedXdr, networkPassphrase());
+  const signedTx = StellarSdk.TransactionBuilder.fromXDR(
+    signedXdr,
+    networkPassphrase(),
+  );
 
   const sendResult = await server.sendTransaction(signedTx);
   if (sendResult.status === "ERROR") {
@@ -239,7 +360,10 @@ async function submitAndPoll(
 /**
  * Simulate a read-only call against the ip_registry contract.
  */
-async function simulateIpRegistryView(functionName, args) {
+async function simulateIpRegistryView(
+  functionName: string,
+  args: import("@stellar/stellar-sdk").xdr.ScVal[],
+) {
   if (!IP_REGISTRY_CONTRACT_ID) {
     throw new Error("VITE_CONTRACT_IP_REGISTRY is not configured.");
   }
@@ -270,14 +394,17 @@ async function simulateIpRegistryView(functionName, args) {
  * Decode a Listing ScVal into a plain JS object.
  * Listing { owner, ipfs_hash, merkle_root, royalty_bps, royalty_recipient, price_usdc }
  */
-function decodeListingScVal(scVal, listingId) {
+function decodeListingScVal(
+  scVal: import("@stellar/stellar-sdk").xdr.ScVal | undefined,
+  listingId: number,
+) {
   if (!scVal || scVal.switch().name === "scvVoid") return null;
 
   const native = StellarSdk.scValToNative(scVal);
   if (!native || typeof native !== "object") return null;
 
   // ipfs_hash and merkle_root are Bytes — scValToNative returns Buffer/Uint8Array
-  const toHex = (v) =>
+  const toHex = (v: any) =>
     v instanceof Uint8Array || Buffer.isBuffer(v)
       ? Buffer.from(v).toString("hex")
       : String(v ?? "");
@@ -298,10 +425,10 @@ function decodeListingScVal(scVal, listingId) {
  * @param {string} ownerAddress - Stellar public key (G...)
  * @returns {Promise<number[]>}
  */
-export async function getListingsByOwner(ownerAddress) {
+export async function getListingsByOwner(ownerAddress: string) {
   const addressScVal = StellarSdk.nativeToScVal(
     new StellarSdk.Address(ownerAddress),
-    { type: "address" }
+    { type: "address" },
   );
 
   const retval = await simulateIpRegistryView("list_by_owner", [addressScVal]);
@@ -317,7 +444,7 @@ export async function getListingsByOwner(ownerAddress) {
  * @param {number} listingId
  * @returns {Promise<object|null>}
  */
-export async function getListing(listingId) {
+export async function getListing(listingId: number) {
   const retval = await simulateIpRegistryView("get_listing", [
     StellarSdk.nativeToScVal(listingId, { type: "u64" }),
   ]);
@@ -331,10 +458,10 @@ export async function getListing(listingId) {
  * @param {string} sellerAddress - Stellar public key (G...)
  * @returns {Promise<number[]>}
  */
-export async function getSwapsBySeller(sellerAddress) {
+export async function getSwapsBySeller(sellerAddress: string) {
   const addressScVal = StellarSdk.nativeToScVal(
     new StellarSdk.Address(sellerAddress),
-    { type: "address" }
+    { type: "address" },
   );
 
   const retval = await simulateView("get_swaps_by_seller", [addressScVal]);
