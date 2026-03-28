@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { WalletProvider } from "./context/WalletContext";
 import { WalletConnectButton } from "./components/WalletConnectButton";
 import { MySwapsDashboard } from "./components/MySwapsDashboard";
+import { MyListingsDashboard } from "./components/MyListingsDashboard";
 
 /**
  * App root.
@@ -15,11 +16,13 @@ import { MySwapsDashboard } from "./components/MySwapsDashboard";
 function App() {
   const walletRoot = document.getElementById("wallet-root");
   const dashboardRoot = document.getElementById("dashboard-root");
+  const listingsDashboardRoot = document.getElementById("listings-dashboard-root");
 
   return (
     <WalletProvider>
       {walletRoot && createPortal(<WalletConnectButton />, walletRoot)}
       {dashboardRoot && createPortal(<MySwapsDashboard />, dashboardRoot)}
+      {listingsDashboardRoot && createPortal(<MyListingsDashboard />, listingsDashboardRoot)}
     </WalletProvider>
   );
 }

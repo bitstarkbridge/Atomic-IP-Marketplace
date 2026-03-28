@@ -5,6 +5,7 @@ const RPC_URL =
   "https://soroban-testnet.stellar.org";
 
 const ATOMIC_SWAP_CONTRACT_ID = import.meta.env.VITE_CONTRACT_ATOMIC_SWAP;
+const IP_REGISTRY_CONTRACT_ID = import.meta.env.VITE_CONTRACT_IP_REGISTRY;
 
 const networkPassphrase = () =>
   import.meta.env.VITE_STELLAR_NETWORK === "mainnet"
@@ -14,18 +15,21 @@ const networkPassphrase = () =>
 // ─── View helpers ─────────────────────────────────────────────────────────────
 
 /**
- * Simulate a read-only contract call and return the raw ScVal result.
+ * Generic helper to simulate a read-only contract call and return the raw ScVal result.
  * Uses a throwaway keypair as the source — no signing required.
+ * @param {string} contractId - Target contract address
+ * @param {string} functionName - Function to call
+ * @param {array} args - ScVal arguments
  */
-async function simulateView(functionName, args) {
-  if (!ATOMIC_SWAP_CONTRACT_ID) {
-    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+async function simulateViewOnContract(contractId, functionName, args) {
+  if (!contractId) {
+    throw new Error(`Contract ID is not configured for ${functionName}.`);
   }
 
   const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
   const keypair = StellarSdk.Keypair.random();
   const account = new StellarSdk.Account(keypair.publicKey(), "0");
-  const contract = new StellarSdk.Contract(ATOMIC_SWAP_CONTRACT_ID);
+  const contract = new StellarSdk.Contract(contractId);
 
   const tx = new StellarSdk.TransactionBuilder(account, {
     fee: StellarSdk.BASE_FEE,
@@ -42,6 +46,17 @@ async function simulateView(functionName, args) {
   }
 
   return result.result?.retval;
+}
+
+/**
+ * Simulate a read-only contract call on atomic_swap and return the raw ScVal result.
+ * Uses a throwaway keypair as the source — no signing required.
+ */
+async function simulateView(functionName, args) {
+  if (!ATOMIC_SWAP_CONTRACT_ID) {
+    throw new Error("VITE_CONTRACT_ATOMIC_SWAP is not configured.");
+  }
+  return simulateViewOnContract(ATOMIC_SWAP_CONTRACT_ID, functionName, args);
 }
 
 /**
@@ -160,6 +175,126 @@ export async function getLedgerTimestamp() {
   // Real approach: use server.getNetwork() or a known genesis timestamp
   // For now return Date.now() / 1000 as a safe fallback
   return Math.floor(Date.now() / 1000);
+}
+
+// ─── IP Registry functions ────────────────────────────────────────────────────
+
+/**
+ * Decode a Soroban ScVal (Listing struct) into a plain JS object.
+ * Listing = { owner: Address, ipfs_hash: Bytes, merkle_root: Bytes,
+ *             royalty_bps: u32, royalty_recipient: Address, price_usdc: i128 }
+ */
+function decodeListingScVal(scVal, listingId) {
+  if (!scVal || scVal.switch().name === "scvVoid") return null;
+
+  const native = StellarSdk.scValToNative(scVal);
+  if (!native || typeof native !== "object") return null;
+
+  // Decode Bytes to hex strings
+  let ipfsHash = "";
+  if (native.ipfs_hash instanceof Uint8Array || Buffer.isBuffer(native.ipfs_hash)) {
+    ipfsHash = Buffer.from(native.ipfs_hash).toString("hex");
+  }
+
+  let merkleRoot = "";
+  if (native.merkle_root instanceof Uint8Array || Buffer.isBuffer(native.merkle_root)) {
+    merkleRoot = Buffer.from(native.merkle_root).toString("hex");
+  }
+
+  return {
+    id: listingId,
+    owner: String(native.owner ?? ""),
+    ipfs_hash: ipfsHash,
+    merkle_root: merkleRoot,
+    royalty_bps: Number(native.royalty_bps ?? 0),
+    royalty_recipient: String(native.royalty_recipient ?? ""),
+    price_usdc: Number(native.price_usdc ?? 0),
+  };
+}
+
+/**
+ * Fetch all listing IDs for an owner by calling list_by_owner.
+ * @param {string} ownerAddress - Stellar public key (G...)
+ * @returns {Promise<number[]>}
+ */
+export async function getListingsByOwner(ownerAddress) {
+  const addressScVal = StellarSdk.nativeToScVal(
+    new StellarSdk.Address(ownerAddress),
+    { type: "address" }
+  );
+
+  const retval = await simulateViewOnContract(
+    IP_REGISTRY_CONTRACT_ID,
+    "list_by_owner",
+    [addressScVal]
+  );
+  if (!retval) return [];
+
+  // scValToNative on Vec<u64> returns BigInt[]
+  const arr = StellarSdk.scValToNative(retval);
+  if (!Array.isArray(arr)) return [];
+  return arr.map((v) => Number(v));
+}
+
+/**
+ * Fetch full listing details for a single listing ID.
+ * Reads the Listing struct from contract storage via getLedgerEntries.
+ * @param {number} listingId
+ * @returns {Promise<object|null>}
+ */
+export async function getListing(listingId) {
+  if (!IP_REGISTRY_CONTRACT_ID) {
+    throw new Error("VITE_CONTRACT_IP_REGISTRY is not configured.");
+  }
+
+  const server = new StellarSdk.SorobanRpc.Server(RPC_URL);
+
+  // Build the DataKey::Listing(listingId) storage key
+  // DataKey::Listing(u64) encodes as a Vec<ScVal> = [Symbol("Listing"), u64]
+  const dataKey = StellarSdk.xdr.ScVal.scvVec([
+    StellarSdk.xdr.ScVal.scvSymbol("Listing"),
+    StellarSdk.nativeToScVal(listingId, { type: "u64" }),
+  ]);
+
+  const contractId = new StellarSdk.Contract(IP_REGISTRY_CONTRACT_ID).contractId();
+
+  const ledgerKey = StellarSdk.xdr.LedgerKey.contractData(
+    new StellarSdk.xdr.LedgerKeyContractData({
+      contract: new StellarSdk.Address(contractId).toScAddress(),
+      key: dataKey,
+      durability: StellarSdk.xdr.ContractDataDurability.persistent(),
+    })
+  );
+
+  const response = await server.getLedgerEntries(ledgerKey);
+
+  if (!response.entries || response.entries.length === 0) return null;
+
+  const entry = response.entries[0];
+  const contractData = entry.val.contractData();
+  const listingScVal = contractData.val();
+
+  return decodeListingScVal(listingScVal, listingId);
+}
+
+/**
+ * Fetch all swap IDs for a seller by calling get_swaps_by_seller.
+ * @param {string} sellerAddress - Stellar public key (G...)
+ * @returns {Promise<number[]>}
+ */
+export async function getSwapsBySeller(sellerAddress) {
+  const addressScVal = StellarSdk.nativeToScVal(
+    new StellarSdk.Address(sellerAddress),
+    { type: "address" }
+  );
+
+  const retval = await simulateView("get_swaps_by_seller", [addressScVal]);
+  if (!retval) return [];
+
+  // scValToNative on Vec<u64> returns BigInt[]
+  const arr = StellarSdk.scValToNative(retval);
+  if (!Array.isArray(arr)) return [];
+  return arr.map((v) => Number(v));
 }
 
 // ─── Mutations ────────────────────────────────────────────────────────────────
